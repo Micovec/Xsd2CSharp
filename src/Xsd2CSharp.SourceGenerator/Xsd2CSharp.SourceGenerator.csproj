@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>Xsd2CSharp.SourceGenerator</RootNamespace>
+    <EnforceExtendedAnalyzerRules>true</EnforceExtendedAnalyzerRules>
+    <IsRoslynComponent>true</IsRoslynComponent>
+    <NoWarn>$(NoWarn);RS2008</NoWarn>
+    <!--
+      Generators load as a single analyzer assembly with no normal MSBuild-style dependency
+      resolution, so a plain ProjectReference to Xsd2CSharp.Core wouldn't get Core.dll loaded
+      alongside the generator at analyze time. This makes the referenced project's own resolved
+      compile-time dependencies (i.e. Xsd2CSharp.Core.dll) show up as part of *this* project's
+      target path, so a consumer's `OutputItemType="Analyzer"` ProjectReference to this project
+      picks up Core.dll too.
+    -->
+    <GetTargetPathDependsOn>$(GetTargetPathDependsOn);GetDependencyTargetPaths</GetTargetPathDependsOn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.14.0" PrivateAssets="all" />
+    <ProjectReference Include="..\Xsd2CSharp.Core\Xsd2CSharp.Core.csproj" PrivateAssets="all" />
+  </ItemGroup>
+
+  <Target Name="GetDependencyTargetPaths" DependsOnTargets="ResolveProjectReferences">
+    <ItemGroup>
+      <!-- @(_ResolvedProjectReferencePaths) is Core.dll's already-resolved absolute output path
+           (handles Configuration/TFM correctly - no hardcoded path assumptions). -->
+      <TargetPathWithTargetPlatformMoniker Include="@(_ResolvedProjectReferencePaths)" IncludeRuntimeDependency="false" />
+    </ItemGroup>
+  </Target>
+
+</Project>
