@@ -157,7 +157,17 @@ public sealed class SchemaModelBuilder
         if (_classCache.TryGetValue(complexType, out ClassTypeModel? existing))
             return existing;
 
-        string clrName = UniqueTypeName(suggestedName);
+        // A complexType with its own top-level XSD name must always be named after that XSD name,
+        // never after whichever element/usage-site happens to reach it first during the recursive
+        // graph walk - Run()'s own pre-registration loop calls this with the type's real name, but a
+        // member elsewhere (e.g. an element whose type="..." references this same complexType) can
+        // recurse into building it first, before that loop's own turn for this exact type is reached,
+        // and would otherwise "win" the cache with a merely-contextual name (e.g. "OwnerPointsInSequence"
+        // instead of the type's own "PointsInSequenceRelStructure"). An anonymous (nested, no top-level
+        // name) complexType has no such name to prefer, so it keeps the caller-supplied contextual one.
+        string effectiveName = complexType.QualifiedName.IsEmpty ? suggestedName : complexType.QualifiedName.Name;
+
+        string clrName = UniqueTypeName(effectiveName);
         ClassTypeModel model = new(clrName, ResolveClrNamespace(complexType)) { IsAbstract = complexType.IsAbstract };
 
         _classCache[complexType] = model; // register before recursing, to break reference cycles
@@ -377,7 +387,17 @@ public sealed class SchemaModelBuilder
                 target.Add(new MemberModel(MemberKind.Element, "AnyElements", "", "System.Xml.XmlElement", IoKind.Wildcard) { IsRepeating = true });
                 return;
 
-            case XmlSchemaChoice choice:
+            // A <xsd:choice> with fewer than two branches isn't really offering an alternative at
+            // all - real-world schemas (e.g. NeTEx's "*_RelStructure" types) routinely wrap a single
+            // element ref in a <xsd:choice> purely to give it its own minOccurs/maxOccurs, instead of
+            // using <xsd:sequence> (e.g. stopPointsInSequence_RelStructure: a <xsd:choice> with one
+            // <xsd:element ref="StopPointInJourneyPattern" minOccurs="2" maxOccurs="unbounded"/>).
+            // Falling through to the XmlSchemaGroupBase handling below - the same handling an
+            // equivalently-shaped <xsd:sequence>/<xsd:all> already gets - means that branch's own
+            // minOccurs/maxOccurs drives the resulting member directly, instead of being silently
+            // dropped in favor of the choice's own (default 1..1, and thus non-repeating) occurs. A
+            // real xsd:choice with 2+ genuine alternatives still becomes a union, as before.
+            case XmlSchemaChoice choice when choice.Items.Count >= 2:
                 target.Add(BuildChoiceMember(choice, ownerContextName));
                 return;
 

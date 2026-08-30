@@ -1178,24 +1178,42 @@ public static class SchemaCodeGenerator
     private static string FormatSingleExpr(string valueExpr, IoKind ioKind, string clrTypeName, string? formatMethod, Refs refs) => ioKind switch
     {
         IoKind.Primitive => formatMethod is null ? valueExpr : $"XsdConvert.{formatMethod}({valueExpr})",
-        IoKind.Enum => $"{clrTypeName}Xml.Format({valueExpr})",
+        IoKind.Enum => $"{QualifiedEnumXmlType(clrTypeName, refs)}.Format({valueExpr})",
         // Serializable + Format/Parse-as-a-string only ever applies to text unions (xsd:union
         // simpleType) - an element-choice union is never used as a bare scalar value, always as an
         // actual element (see EmitElementChoiceUnion's ReadXml/WriteXml), and a class-typed value is
         // always intercepted before reaching here (every call site gates on refs.IsClass first). Text
         // unions carry Parse/Format directly as static members on the union type itself, no separate
         // companion class - see EmitTextUnion.
-        IoKind.Serializable => $"{clrTypeName}.Format({valueExpr})",
+        IoKind.Serializable => $"{QualifiedUnionType(clrTypeName, refs)}.Format({valueExpr})",
         _ => valueExpr,
     };
 
     private static string ParseSingleExpr(string textExpr, IoKind ioKind, string clrTypeName, string? parseMethod, Refs refs) => ioKind switch
     {
         IoKind.Primitive => parseMethod is null ? textExpr : $"XsdConvert.{parseMethod}({textExpr})",
-        IoKind.Enum => $"{clrTypeName}Xml.Parse({textExpr})",
-        IoKind.Serializable => $"{clrTypeName}.Parse({textExpr})",
+        IoKind.Enum => $"{QualifiedEnumXmlType(clrTypeName, refs)}.Parse({textExpr})",
+        IoKind.Serializable => $"{QualifiedUnionType(clrTypeName, refs)}.Parse({textExpr})",
         _ => textExpr,
     };
+
+    /// <summary>
+    /// Fully qualifies a generated enum's companion "Xml" class with global:: + its namespace.
+    /// Needed because a member's own C# property name can be identical to its type's name (e.g.
+    /// GML's pervasive "nilReason" attribute produces a "NilReason" property of the "NilReason"
+    /// union type itself) - an unqualified "TypeName.StaticMember(...)" call emitted inside that very
+    /// type's own class binds to the property instead of the type in that situation (simple-name
+    /// lookup always prefers an enclosing type's own member over a same-named type), which then
+    /// fails to compile since the property's type has no such static member. global:: qualification
+    /// sidesteps simple-name lookup entirely, so this is applied unconditionally rather than only
+    /// where a collision is actually detected.
+    /// </summary>
+    private static string QualifiedEnumXmlType(string clrTypeName, Refs refs) =>
+        $"global::{refs.Enums[clrTypeName].ClrNamespace}.{clrTypeName}Xml";
+
+    /// <summary>See <see cref="QualifiedEnumXmlType"/> - same reasoning, for union types (IoKind.Serializable).</summary>
+    private static string QualifiedUnionType(string clrTypeName, Refs refs) =>
+        $"global::{refs.Unions[clrTypeName].ClrNamespace}.{clrTypeName}";
 
     /// <summary>
     /// Emits [System.Xml.Serialization.XmlRoot(...)] on a class/enum that's unambiguously a root
