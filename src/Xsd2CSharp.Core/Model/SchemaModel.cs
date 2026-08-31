@@ -132,6 +132,20 @@ public sealed class MemberModel(MemberKind kind, string clrPropertyName, string 
     /// <summary>Multiple sibling elements (maxOccurs > 1). Never true for attributes.</summary>
     public bool IsRepeating { get; set; }
 
+    /// <summary>
+    /// XSD minOccurs for a repeating member, only meaningful (and only ever nonzero) when
+    /// <see cref="IsRepeating"/> is true - IsOptional already covers the plain 0-or-1 case, so this
+    /// isn't used there. The generated WriteXml checks the collection's Count against this before
+    /// writing, and ReadXml checks the final Count against it after reading, throwing
+    /// InvalidOperationException on violation - see <see cref="MaxOccurs"/>. Left at 0 (no check)
+    /// wherever the builder isn't confident the value precisely reflects the schema (e.g. a choice
+    /// member whose repetition comes from a nested choice rather than its own maxOccurs).
+    /// </summary>
+    public int MinOccurs { get; set; }
+
+    /// <summary>XSD maxOccurs for a repeating member, or null for "unbounded" (no check emitted). See <see cref="MinOccurs"/>.</summary>
+    public int? MaxOccurs { get; set; }
+
     /// <summary>The value's lexical form is itself an xsd:list (space-separated tokens within one element/attribute, e.g. NMTOKENS).</summary>
     public bool IsTokenList { get; set; }
 

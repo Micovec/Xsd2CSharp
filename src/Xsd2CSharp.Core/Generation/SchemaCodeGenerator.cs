@@ -488,6 +488,7 @@ public static class SchemaCodeGenerator
                             }
                             w.Line("reader.ReadEndElement();");
                         }
+                        w.Line("CheckOccurs();");
                     }
                     w.Line();
                 }
@@ -508,6 +509,20 @@ public static class SchemaCodeGenerator
                 if (hasBase) w.Line("base.WriteXmlElements(writer);");
                 foreach (MemberModel el in c.Elements)
                     EmitWriteElement(w, el, refs);
+            }
+            w.Line();
+
+            // Unlike WriteXmlElements/TryReadXmlElement (each level's own elements are naturally
+            // written/dispatched by that level's own virtual override), the physical read loop only
+            // exists once, on the root's ReadXml above - so occurs-checking needs its own virtual
+            // hook, called once via "this." after that loop, to reach every level's own elements
+            // through the normal override chain regardless of which concrete class in the hierarchy
+            // is actually being read.
+            using (w.Block($"protected {modifier} void CheckOccurs()"))
+            {
+                if (hasBase) w.Line("base.CheckOccurs();");
+                foreach (MemberModel el in c.Elements)
+                    EmitOccursCheck(w, el);
             }
             w.Line();
 
@@ -631,6 +646,8 @@ public static class SchemaCodeGenerator
 
                     EmitElementDispatchBody(w, c.Elements, refs);
                 }
+                foreach (MemberModel el in c.Elements)
+                    EmitOccursCheck(w, el);
             }
         }
     }
@@ -747,6 +764,7 @@ public static class SchemaCodeGenerator
             // member, the caller here does no wrapping of its own.
             if (el.IsRepeating)
             {
+                EmitOccursCheck(w, el);
                 using (w.Block($"foreach (var __item in this.{el.ClrPropertyName})"))
                     w.Line("__item.WriteXml(writer);");
             }
@@ -769,6 +787,7 @@ public static class SchemaCodeGenerator
 
         if (el.IsRepeating && el.IsTokenList)
         {
+            EmitOccursCheck(w, el);
             // List<List<T>>: one sibling element per outer entry, each one's text is its own inner list.
             using (w.Block($"foreach (var __outer in this.{el.ClrPropertyName})"))
             {
@@ -802,6 +821,7 @@ public static class SchemaCodeGenerator
 
         if (el.IsRepeating)
         {
+            EmitOccursCheck(w, el);
             using (w.Block($"foreach (var __item in this.{el.ClrPropertyName})"))
                 EmitWriteSingleElement(w, "__item", el, refs);
             return;
@@ -911,6 +931,8 @@ public static class SchemaCodeGenerator
                 }
                 w.Line("reader.ReadEndElement();");
             }
+            foreach (MemberModel el in c.Elements)
+                EmitOccursCheck(w, el);
         }
     }
 
@@ -1173,6 +1195,25 @@ public static class SchemaCodeGenerator
         if (m.IsOptional)
             return m.IsValueType ? $"this.{m.ClrPropertyName}.HasValue" : $"this.{m.ClrPropertyName} is not null";
         return null;
+    }
+
+    /// <summary>
+    /// Emits a guard that throws InvalidOperationException if a repeating member's current Count
+    /// violates its XSD minOccurs/maxOccurs (see MemberModel.MinOccurs/MaxOccurs - left at "no
+    /// check" (0 / null) wherever the builder isn't confident the value precisely reflects the
+    /// schema). Called before writing a repeating collection and after fully reading one, so a
+    /// malformed object graph fails loudly instead of silently producing (or accepting) XML that
+    /// doesn't actually satisfy the schema it claims to. No-op for anything not both repeating and
+    /// actually constrained.
+    /// </summary>
+    private static void EmitOccursCheck(CodeWriter w, MemberModel m)
+    {
+        if (!m.IsRepeating)
+            return;
+        if (m.MinOccurs > 0)
+            w.Line($"if (this.{m.ClrPropertyName}.Count < {m.MinOccurs}) throw new InvalidOperationException($\"'{m.ClrPropertyName}' requires at least {m.MinOccurs} item(s) per the schema, but has {{this.{m.ClrPropertyName}.Count}}.\");");
+        if (m.MaxOccurs is { } max)
+            w.Line($"if (this.{m.ClrPropertyName}.Count > {max}) throw new InvalidOperationException($\"'{m.ClrPropertyName}' allows at most {max} item(s) per the schema, but has {{this.{m.ClrPropertyName}.Count}}.\");");
     }
 
     private static string FormatSingleExpr(string valueExpr, IoKind ioKind, string clrTypeName, string? formatMethod, Refs refs) => ioKind switch

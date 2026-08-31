@@ -429,8 +429,12 @@ public sealed class SchemaModelBuilder
 
                 if (scratch.Count == 1)
                 {
-                    // List<List<T>> if it's also xsd:list-valued - see BuildElementMember.
+                    // List<List<T>> if it's also xsd:list-valued - see BuildElementMember. The
+                    // group's own occurs (not the flattened member's, if it even had its own) now
+                    // governs repetition, since the group is what's actually collapsed away here.
                     scratch[0].IsRepeating = true;
+                    scratch[0].MinOccurs = NormalizeOccurs(repeating.MinOccurs);
+                    scratch[0].MaxOccurs = NormalizeMaxOccurs(repeating.MaxOccurs);
                     target.Add(scratch[0]);
                     return;
                 }
@@ -454,6 +458,8 @@ public sealed class SchemaModelBuilder
                 {
                     IsRepeating = true,
                     TriggerNames = RowTriggerNames(repeatingRow.Elements),
+                    MinOccurs = NormalizeOccurs(repeating.MinOccurs),
+                    MaxOccurs = NormalizeMaxOccurs(repeating.MaxOccurs),
                 });
 
                 return;
@@ -680,13 +686,16 @@ public sealed class SchemaModelBuilder
         string name = element.QualifiedName.Name;
         bool isOptional = element.MinOccurs == 0m;
         bool isRepeating = element.MaxOccurs > 1m;
+        int minOccurs = NormalizeOccurs(element.MinOccurs);
+        int? maxOccurs = NormalizeMaxOccurs(element.MaxOccurs);
 
         UnionTypeModel? substitutionUnion = TryGetSubstitutionUnion(element, ownerContextName);
         if (substitutionUnion is not null)
         {
             // Union declarations lower to structs, so this is a value type.
             MemberTypeInfo unionTypeInfo = new(substitutionUnion.ClrName, IoKind.Serializable, true, null, null, false, false);
-            return ToMember(MemberKind.Element, "Subst_" + name, "", unionTypeInfo, isOptional, isRepeating, isNillable: false);
+            return ToMember(MemberKind.Element, "Subst_" + name, "", unionTypeInfo, isOptional, isRepeating, isNillable: false,
+                minOccurs: minOccurs, maxOccurs: maxOccurs);
         }
 
         MemberTypeInfo typeInfo = ResolveType(element.ElementSchemaType!, CombineContext(ownerContextName, CSharpIdentifiers.ToPascalIdentifier(name)));
@@ -696,7 +705,7 @@ public sealed class SchemaModelBuilder
         // per sibling element, inner = that element's own space-separated tokens. See EmitProperty /
         // EmitWriteElement / EmitReadElementCaseBody for the List<List<T>> codegen.
         MemberModel member = ToMember(MemberKind.Element, name, element.QualifiedName.Namespace, typeInfo, isOptional, isRepeating, element.IsNillable,
-            xsdDefaultValue: element.DefaultValue ?? element.FixedValue);
+            xsdDefaultValue: element.DefaultValue ?? element.FixedValue, minOccurs: minOccurs, maxOccurs: maxOccurs);
         return member;
     }
 
@@ -719,9 +728,17 @@ public sealed class SchemaModelBuilder
 
         // A nested <choice> branch is flattened into this same union's cases regardless of its own
         // occurs (see GetOrBuildChoiceUnion) - if any such branch can repeat, this member must be a
-        // list even though the outer choice itself doesn't repeat. Cardinality (e.g. "at least 2") is
-        // not enforced on read, consistent with the rest of this generator.
+        // list even though the outer choice itself doesn't repeat.
         bool isRepeating = choice.MaxOccurs > 1m || HasRepeatingNestedChoice(choice);
+
+        // Only emit a minOccurs/maxOccurs check when the choice's own occurs directly and solely
+        // drive the repetition - when it comes from a nested choice instead (HasRepeatingNestedChoice),
+        // the true effective bounds depend on which nested branch is actually chosen each time, which
+        // this generator doesn't attempt to reason about precisely (same "not enforced" spirit as
+        // elsewhere) - so no check is emitted there rather than a possibly-wrong one.
+        bool ownOccursDriveRepeat = choice.MaxOccurs > 1m;
+        int minOccurs = ownOccursDriveRepeat ? NormalizeOccurs(choice.MinOccurs) : 0;
+        int? maxOccurs = ownOccursDriveRepeat ? NormalizeMaxOccurs(choice.MaxOccurs) : null;
 
         // "Choice_" is a sentinel other code checks for (e.g. "does a row start with a nested
         // choice?") - the rest is just for readability, so anchor on the first case only (same
@@ -740,7 +757,8 @@ public sealed class SchemaModelBuilder
         string? firstCaseName = choice.Items.OfType<XmlSchemaElement>().Select(e => e.QualifiedName.Name).FirstOrDefault();
         string xmlName = "Choice_" + (firstCaseName ?? "Choice");
 
-        return ToMember(MemberKind.Element, xmlName, "", typeInfo, isOptional, isRepeating, isNillable: false);
+        return ToMember(MemberKind.Element, xmlName, "", typeInfo, isOptional, isRepeating, isNillable: false,
+            minOccurs: minOccurs, maxOccurs: maxOccurs);
     }
 
     private static bool HasRepeatingNestedChoice(XmlSchemaChoice choice) =>
@@ -1084,7 +1102,7 @@ public sealed class SchemaModelBuilder
     }
 
     private static MemberModel ToMember(MemberKind kind, string xmlName, string xmlNamespace, MemberTypeInfo typeInfo,
-        bool isOptional, bool isRepeating, bool isNillable, string? xsdDefaultValue = null)
+        bool isOptional, bool isRepeating, bool isNillable, string? xsdDefaultValue = null, int minOccurs = 0, int? maxOccurs = null)
     {
         string clrPropertyName = CSharpIdentifiers.ToPascalIdentifier(xmlName);
 
@@ -1100,9 +1118,17 @@ public sealed class SchemaModelBuilder
             FormatMethod = typeInfo.FormatMethod,
             IsBase64 = typeInfo.IsBase64,
             XsdDefaultValue = xsdDefaultValue,
+            MinOccurs = minOccurs,
+            MaxOccurs = maxOccurs,
         };
         return member;
     }
+
+    /// <summary>Converts an XmlSchemaParticle's raw decimal MinOccurs/MaxOccurs to an int, clamping absurdly large values rather than overflowing.</summary>
+    private static int NormalizeOccurs(decimal value) => value >= int.MaxValue ? int.MaxValue : (int)value;
+
+    /// <summary>Same as <see cref="NormalizeOccurs"/>, but for MaxOccurs specifically: XSD's maxOccurs="unbounded" compiles to decimal.MaxValue, which means "no check" (null) rather than a literal huge number.</summary>
+    private static int? NormalizeMaxOccurs(decimal value) => value >= decimal.MaxValue ? null : NormalizeOccurs(value);
 
     private sealed record MemberTypeInfo(
         string ClrTypeName,
